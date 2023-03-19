@@ -1,0 +1,281 @@
+#!/bin/bash
+
+#####################################################
+#                                                   #
+#               MyDump2S3                           #
+#                                                   #
+# Dumps MySQL databases, gzip it and save it to S3  #
+#                                                   #
+#####################################################
+
+SCRIPTNAME="MyDump2S3"
+SCRIPTVERSION="0.1b"
+VERBOSE=false
+EMPTYDIR=false
+
+BACKUPDIR=${BACKUPDIR:-/backups}
+BACKUPDIRPERMISSIONS=${BACKUPDIRPERMISSIONS:-+X}
+
+BACKUPAFFIX=""
+BACKUPNAME=""
+BACKUPFULLPATH=""
+
+DB_HOST=${DB_HOST}
+DB_USERNAME=${DB_USERNAME}
+DB_PASSWORD=${DB_PASSWORD}
+DB_PORT=${DB_PORT:-3306}
+DB_NAMES=${DB_NAMES:-""}
+DB_DUMP_OPTIONS=${DB_DUMP_OPTIONS:-"--no-tablespaces --add-drop-database --set-gtid-purged=OFF --single-transaction"}
+
+AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+BUCKET_NAME=${BUCKET_NAME}
+
+CANBACKUP=false
+
+#####################################################
+#                                                   #
+#               FUNCTIONS                           #
+#                                                   #
+#####################################################
+
+Version()
+{
+    echo "${SCRIPTNAME} version: ${SCRIPTVERSION}"
+    echo "author: walter raponi <walter.raponi@gmail.com>"
+}
+Printout()
+{
+    if [ "$VERBOSE" = true ]
+    then
+      echo -e $1
+    fi
+}
+BkpSetPath()
+{
+    BACKUPDIR=$1
+    Printout "Mkdir ${1} if not exists"
+    mkdir -p $BACKUPDIR
+
+    if [ "$EMPTYDIR" = true ]
+    then
+      Printout "Empty the backupdir ${1}"
+      rm -rf $BACKUPDIR/*
+    fi
+
+    Printout "Setup backupdir permissions"
+    chmod $BACKUPDIRPERMISSIONS $BACKUPDIR
+}
+Help()
+{
+    echo "#####################################################"
+    echo
+    echo "          ${SCRIPTNAME} version: ${SCRIPTVERSION}"
+    echo "Dumps MySQL database, gzip it and save it to S3"
+    echo
+    echo "#####################################################"
+    echo
+    echo "Requires: mysqldump, gzip, awscli"
+    echo "Requires: DB_HOST, DB_USERNAME, DB_PASSWORD to be set"
+    echo "Requires: AWS_SECRET_ACCESS_KEY, AWS_ACCESS_KEY_ID, AWS_DEFAULT_REGIONE, BUCKET_NAME to be set, best by env vars or aws configure"
+    echo
+    echo "author: walter raponi <walter.raponi@gmail.com>"
+    echo
+    echo "Syntax: mysqlbkp.sh [-d|-D|-e|-h|n|-o|-p|-P|-v|-V]"
+    echo
+    echo "options:"
+    echo "a     Affix string to backup name"
+    echo "b     Set Bucket name"
+    echo "D     Set the backup path, defaults to /backups, will be created if not exists"
+    echo "e     Empty the backupdir before and after backup"
+    echo "h     Prints this help"
+    echo "k     Set AWS Secret Access Key"
+    echo "K     Set AWS Access Key ID"
+    echo "n     Database names to be exported"
+    echo "o     Database dump options"
+    echo "P     Set backup dir permissions, defaults to +X"
+    echo "v     Verbose mode"
+    echo "V     Display version"
+    echo
+}
+CheckArgs()
+{
+    Printout "Check if all the variables are set"
+    local canbackup=true
+    tput setaf 1;
+    if [ -z "$DB_HOST" ]
+    then
+        echo "ERROR: DB_HOST not set"
+        canbackup=false
+    fi
+
+    if [ -z "$DB_USERNAME" ]
+    then
+        echo "ERROR: DB_USERNAME not set"
+        canbackup=false
+    fi
+
+    if [ -z "$DB_PASSWORD" ]
+    then
+        echo "ERROR: DB_PASSWORD not set"
+        canbackup=false
+    fi
+
+    if [ -z "$BUCKET_NAME" ]
+    then
+        echo "ERROR: BUCKET_NAME not set"
+        canbackup=false
+    fi
+
+    if [ -z "$DB_NAMES" ]
+    then
+        echo "ERROR: DB_NAMES not set"
+        canbackup=false
+    fi
+
+    if [ -z "$BACKUPDIR" ]
+    then
+        echo "ERROR: BACKUPDIR not set"
+        canbackup=false
+    fi
+
+    if [ -z "$AWS_DEFAULT_REGION" ]
+    then
+        echo "ERROR: aws default region not set"
+    fi
+    
+    if [ -z "$AWS_SECRET_ACCESS_KEY" ]
+    then
+        echo "ERROR: aws secret access key not set"
+    fi
+
+    if [ -z "$AWS_ACCESS_KEY_ID" ]
+    then
+        echo "ERROR: aws access key id not set"
+    fi
+
+    tput sgr0
+
+    CANBACKUP=$canbackup
+}
+SetBackupName()
+{
+    Printout "Set backup name"
+    BACKUPNAME=${BACKUPAFFIX}${DB_HOST}_$(date +'%Y.%m.%d.%H%I%S').sql.gz
+    BACKUPFULLPATH="${BACKUPDIR}/${BACKUPNAME}"
+}
+
+#####################################################
+#                                                   #
+#               ENTRY                               #
+#                                                   #
+#####################################################
+
+#todo database args
+STARTUPSTRING="Startup args: $@\n"
+while getopts "hVvD:a:b:k:K:n:p:e:" option;
+do
+    case $option in
+        h) # display Help
+            Help
+            exit;;
+        V) # show version
+            Version
+            exit;;
+        v) # verbose mode (default: false
+            VERBOSE=true;;
+        a) #  affix string to backup name
+            STARTUPSTRING+="Prepend string to backup name ${OPTARG}\n";
+            BACKUPAFFIX=$OPTARG;;
+        b) # set bucket name
+            STARTUPSTRING+="Set bucket name to ${OPTARG}\n";
+            BUCKET_NAME=$OPTARG;;
+        D) # set backup path
+            STARTUPSTRING+="Set backup path to ${OPTARG}\n";
+            BkpSetPath $OPTARG;;
+        e) # empty backup dir
+            STARTUPSTRING+="Empty backup dir ${OPTARG}\n";
+            EMPTYDIR=$OPTARG;;
+        k) # set aws secret access key
+            STARTUPSTRING+="Set aws secret access key to ${OPTARG}\n";
+            AWS_SECRET_ACCESS_KEY=$OPTARG;;
+        K) # set aws access key id
+            STARTUPSTRING+="Set aws access key id to ${OPTARG}\n";
+            AWS_ACCESS_KEY_ID=$OPTARG;;
+        n) # set databases to be exported
+            STARTUPSTRING+="Set databases to be exported to ${OPTARG}\n";
+            DB_NAMES=$OPTARG;;
+        o) # set dump options
+            STARTUPSTRING+="Set dump options to ${OPTARG}\n";
+            DUMPOPTIONS=$OPTARG;;
+        P) # set backup dir permissions
+            STARTUPSTRING+="Set backup dir permissions to ${OPTARG}\n";
+            BACKUPDIRPERMISSIONS=$OPTARG;;
+        \?) # Invalid option
+            echo "Error: Invalid option"
+            exit;;
+   esac
+done
+Printout "Startup args: $STARTUPSTRING"
+
+#####################################################
+#                                                   #
+#               MAIN PROGRAM                        #
+#                                                   #
+#####################################################
+
+Printout "Set backup name"
+SetBackupName
+
+Printout "Check if can backup"
+CheckArgs
+
+if [ "$CANBACKUP" = false ]
+then
+    echo "Cannot backup, exiting"
+    exit
+fi
+
+Printout "Check awscli installation"
+
+#check AWS CLI installation
+#todo remove pip dependency
+if ! aws --version &> /dev/null
+then
+    echo "awscli Not Found, installing..."
+    if !pip -V &> /dev null
+    then
+        echo "pip Not Found, cannot run script..."
+        exit
+    fi
+
+    pip install --no-input awscli
+    
+    if ! aws --version  &> /dev/null
+    then
+        echo "Cannot install awscli, exiting"
+        exit
+    fi
+fi
+
+Printout "Starting Backup..."
+Printout "Backupdir: ${BACKUPDIRECTORY}"
+Printout "Backupname: ${BACKUPNAME}"
+Printout "Backupfullpath: ${BACKUPFULLPATH}"
+Printout "Connection to ${DB_HOST} with user ${DB_USERNAME}"
+Printout "Backup of databases: $DB_NAMES at $BACKUPFULLPATH"
+
+COMMAND="mysqldump -h ${DB_HOST} -P ${DB_PORT} -u ${DB_USERNAME} -p${DB_PASSWORD} ${DB_DUMP_OPTIONS} --databases ${DB_NAMES}"
+$COMMAND | gzip > $BACKUPFULLPATH
+
+FILESIZE=$(du -h $BACKUPFULLPATH|cut -f 1)
+
+Printout "MySQL dump completed, file size: ${FILESIZE}"
+Printout "Coping backup to s3://${BUCKET_NAME}"
+
+aws s3 cp ${BACKUPFULLPATH} s3://${BUCKET_NAME} --region=${AWS_DEFAULT_REGION}
+
+Printout "Backup completed"
+Printout "Removing local backup"
+rm -f $BACKUPFULLPATH
