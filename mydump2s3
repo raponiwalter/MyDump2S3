@@ -54,13 +54,12 @@ Printout()
 }
 BkpSetPath()
 {
-    BACKUPDIR=$1
-    Printout "Mkdir ${1} if not exists"
+    Printout "Mkdir ${BACKUPDIR} if not exists"
     mkdir -p $BACKUPDIR
 
     if [ "$EMPTYDIR" = true ]
     then
-      Printout "Empty the backupdir ${1}"
+      Printout "Empty the backupdir ${BACKUPDIR}"
       rm -rf $BACKUPDIR/*
     fi
 
@@ -82,7 +81,7 @@ Help()
     echo
     echo "author: walter raponi <walter.raponi@gmail.com>"
     echo
-    echo "Syntax: mysqlbkp.sh [-d|-D|-e|-h|n|-o|-p|-P|-v|-V]"
+    echo "Syntax: mydump2s3 [-d|-D|-e|-h|n|-o|-p|-P|-v|-V]"
     echo
     echo "options:"
     echo "a     Affix string to backup name"
@@ -225,6 +224,9 @@ Printout "Startup args: $STARTUPSTRING"
 #                                                   #
 #####################################################
 
+Printout "Set backup path"
+BkpSetPath
+
 Printout "Set backup name"
 SetBackupName
 
@@ -276,6 +278,11 @@ Printout "Coping backup to s3://${BUCKET_NAME}"
 
 aws s3 cp ${BACKUPFULLPATH} s3://${BUCKET_NAME} --region=${AWS_DEFAULT_REGION}
 
+
+if [ "$EMPTYDIR" = true ]
+then
+    Printout "Emptying backup dir"
+    rm -rf ${BACKUPDIR}/*
+fi
+
 Printout "Backup completed"
-Printout "Removing local backup"
-rm -f $BACKUPFULLPATH
